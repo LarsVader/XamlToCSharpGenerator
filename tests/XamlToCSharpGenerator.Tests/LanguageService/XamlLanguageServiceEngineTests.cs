@@ -1380,6 +1380,59 @@ public sealed class XamlLanguageServiceEngineTests
     }
 
     [Fact]
+    public async Task Definition_ForEventHandlerValue_NavigatesToCodeBehindMethod()
+    {
+        using var engine = new XamlLanguageServiceEngine(
+            new InMemoryCompilationProvider(LanguageServiceTestCompilationFactory.CreateCompilation()));
+        const string uri = "file:///tmp/EventHandlerDefinition.axaml";
+        const string xaml =
+            "<UserControl xmlns=\"https://github.com/avaloniaui\" " +
+            "xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" " +
+            "x:Class=\"TestApp.Controls.MainView\">\n" +
+            "  <Button Click=\"OnButtonClick\"/>\n" +
+            "</UserControl>";
+        var options = new XamlLanguageServiceOptions("/tmp");
+
+        await engine.OpenDocumentAsync(uri, xaml, version: 1, options, CancellationToken.None);
+
+        var cursorOffset = xaml.IndexOf("OnButtonClick", StringComparison.Ordinal) + 2;
+        var definitions = await engine.GetDefinitionsAsync(
+            uri,
+            GetPosition(xaml, cursorOffset),
+            options,
+            CancellationToken.None);
+
+        var definition = Assert.Single(definitions);
+        Assert.Contains(LanguageServiceTestCompilationFactory.SymbolSourceFilePath, definition.Uri, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Definition_ForEventHandlerValue_WhenMethodMissing_ReturnsEmpty()
+    {
+        using var engine = new XamlLanguageServiceEngine(
+            new InMemoryCompilationProvider(LanguageServiceTestCompilationFactory.CreateCompilation()));
+        const string uri = "file:///tmp/EventHandlerMissing.axaml";
+        const string xaml =
+            "<UserControl xmlns=\"https://github.com/avaloniaui\" " +
+            "xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" " +
+            "x:Class=\"TestApp.Controls.MainView\">\n" +
+            "  <Button Click=\"NonExistentHandler\"/>\n" +
+            "</UserControl>";
+        var options = new XamlLanguageServiceOptions("/tmp");
+
+        await engine.OpenDocumentAsync(uri, xaml, version: 1, options, CancellationToken.None);
+
+        var cursorOffset = xaml.IndexOf("NonExistentHandler", StringComparison.Ordinal) + 2;
+        var definitions = await engine.GetDefinitionsAsync(
+            uri,
+            GetPosition(xaml, cursorOffset),
+            options,
+            CancellationToken.None);
+
+        Assert.Empty(definitions);
+    }
+
+    [Fact]
     public async Task Reopening_SameUri_SameVersion_DoesNotReuse_Stale_Definitions()
     {
         using var engine = new XamlLanguageServiceEngine(

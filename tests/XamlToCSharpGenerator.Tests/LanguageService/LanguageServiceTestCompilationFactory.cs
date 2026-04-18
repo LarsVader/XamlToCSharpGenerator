@@ -242,6 +242,7 @@ internal static class LanguageServiceTestCompilationFactory
                                       public string Title { get; set; } = string.Empty;
                                       public string RootOnly { get; set; } = string.Empty;
                                       public string FormatTitle() => Title;
+                                      private void OnButtonClick(object? sender, EventArgs e) { }
                                   }
 
                                   public class MyExtension

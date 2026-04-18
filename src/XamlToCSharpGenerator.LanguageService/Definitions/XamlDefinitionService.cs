@@ -48,6 +48,11 @@ public sealed class XamlDefinitionService
             return [CreateSymbolDefinitionLocation(analysis, inlineCodeTarget.Symbol)];
         }
 
+        if (XamlEventHandlerNavigationService.TryResolveEventHandlerDefinition(analysis, position, out var eventHandlerDef))
+        {
+            return [eventHandlerDef];
+        }
+
         var offset = TextCoordinateHelper.GetOffset(analysis.Document.Text, position);
         var identifier = XamlResourceReferenceNavigationSemantics.TryResolveResourceIdentifierAtOffset(
             analysis.Document.Text,

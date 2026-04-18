@@ -46,6 +46,7 @@ public sealed class MsBuildCompilationProvider : ICompilationProvider
         _frameworkRegistry = frameworkRegistry ?? throw new ArgumentNullException(nameof(frameworkRegistry));
         RegisterMsBuildLocator();
         _workspace = MSBuildWorkspace.Create(CreateWorkspaceProperties());
+        _workspace.SkipUnrecognizedProjects = true;
     }
 
     public Task<CompilationSnapshot> GetCompilationAsync(
@@ -144,8 +145,7 @@ public sealed class MsBuildCompilationProvider : ICompilationProvider
                 project = TryGetLoadedProject(projectPath);
                 if (project is null)
                 {
-                    project = await _workspace.OpenProjectAsync(projectPath, cancellationToken: CancellationToken.None)
-                        .ConfigureAwait(false);
+                    project = await OpenProjectSafeAsync(projectPath).ConfigureAwait(false);
                 }
             }
             finally
@@ -210,6 +210,82 @@ public sealed class MsBuildCompilationProvider : ICompilationProvider
                     LanguageServiceDiagnosticSeverity.Error,
                     Source: "MSBuildWorkspace")));
         }
+    }
+
+    /// <summary>
+    /// Attempts to open the project. If it fails (e.g. due to non-C# project references
+    /// like vcxproj causing MSBuild TypeInitializationException), retries with a temporary
+    /// copy that has those references removed.
+    /// </summary>
+    private async Task<Project> OpenProjectSafeAsync(string projectPath)
+    {
+        try
+        {
+            return await _workspace.OpenProjectAsync(projectPath, cancellationToken: CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception) when (HasNonCSharpProjectReferences(projectPath))
+        {
+            // The project has non-C# references (e.g. vcxproj) that MSBuild can't handle.
+            // Create a temp copy without those references and load that instead.
+            var tempPath = CreateSanitizedProjectCopy(projectPath);
+            try
+            {
+                return await _workspace.OpenProjectAsync(tempPath, cancellationToken: CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                try { File.Delete(tempPath); } catch { /* best effort cleanup */ }
+            }
+        }
+    }
+
+    private static bool HasNonCSharpProjectReferences(string projectPath)
+    {
+        try
+        {
+            var doc = XDocument.Load(projectPath);
+            XNamespace ns = doc.Root?.Name.Namespace ?? XNamespace.None;
+            return doc.Descendants(ns + "ProjectReference")
+                .Any(pr =>
+                {
+                    var include = pr.Attribute("Include")?.Value;
+                    return include != null &&
+                           !include.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) &&
+                           !include.EndsWith(".vbproj", StringComparison.OrdinalIgnoreCase);
+                });
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string CreateSanitizedProjectCopy(string projectPath)
+    {
+        var doc = XDocument.Load(projectPath);
+        XNamespace ns = doc.Root?.Name.Namespace ?? XNamespace.None;
+        var nonCSharpRefs = doc.Descendants(ns + "ProjectReference")
+            .Where(pr =>
+            {
+                var include = pr.Attribute("Include")?.Value;
+                return include != null &&
+                       !include.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) &&
+                       !include.EndsWith(".vbproj", StringComparison.OrdinalIgnoreCase);
+            })
+            .ToList();
+
+        foreach (var refNode in nonCSharpRefs)
+        {
+            refNode.Remove();
+        }
+
+        var tempPath = Path.Combine(
+            Path.GetDirectoryName(projectPath)!,
+            ".axsg_" + Path.GetFileName(projectPath));
+        doc.Save(tempPath);
+        return tempPath;
     }
 
     private static bool ShouldEvictCompilationSnapshot(CompilationSnapshot snapshot)
@@ -311,6 +387,13 @@ public sealed class MsBuildCompilationProvider : ICompilationProvider
         if (string.IsNullOrWhiteSpace(message))
         {
             return false;
+        }
+
+        // Suppress BuildHost process lifecycle noise (shutdown errors, not-responding messages).
+        // These are non-functional and only occur when MSBuildWorkspace cleans up build processes.
+        if (message.Contains("BuildHost", StringComparison.Ordinal))
+        {
+            return true;
         }
 
         var prefixIndex = message.IndexOf(MissingMetadataReferencePrefix, StringComparison.Ordinal);
@@ -550,6 +633,14 @@ public sealed class MsBuildCompilationProvider : ICompilationProvider
         {
             properties["EnableWindowsTargeting"] = "true";
         }
+
+        // Design-time build mode: lighter evaluation, skips full build targets.
+        // Prevents crashes when projects reference non-C# projects (e.g. vcxproj)
+        // whose MSBuild targets are unavailable in the language server context.
+        properties["DesignTimeBuild"] = "true";
+        properties["BuildProjectReferences"] = "false";
+        properties["SkipCompilerExecution"] = "true";
+        properties["ProvideCommandLineArgs"] = "true";
 
         return properties;
     }

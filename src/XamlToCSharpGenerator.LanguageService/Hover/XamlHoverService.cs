@@ -49,6 +49,11 @@ public sealed class XamlHoverService
             return markupExtensionHover;
         }
 
+        if (TryGetEventHandlerHover(analysis, position, out var eventHandlerHover))
+        {
+            return eventHandlerHover;
+        }
+
         if (TryGetNamedElementOrResourceHover(analysis, position, out var namedOrResourceHover))
         {
             return namedOrResourceHover;
@@ -356,6 +361,27 @@ public sealed class XamlHoverService
         hover = new XamlHoverInfo(
             XamlHoverMarkdownFormatter.FormatMarkupExtension(classToken.Name, kind, resolvedTypeReference),
             BuildRange(analysis.Document.Text, classToken.Start, classToken.Start + classToken.Length));
+        return true;
+    }
+
+    private static bool TryGetEventHandlerHover(
+        XamlAnalysisResult analysis,
+        SourcePosition position,
+        out XamlHoverInfo? hover)
+    {
+        hover = null;
+        if (!XamlEventHandlerNavigationService.TryResolveEventHandlerSymbol(
+                analysis,
+                position,
+                out var methodSymbol,
+                out var valueRange))
+        {
+            return false;
+        }
+
+        hover = new XamlHoverInfo(
+            XamlHoverMarkdownFormatter.FormatSymbol("Event Handler", methodSymbol),
+            valueRange);
         return true;
     }
 

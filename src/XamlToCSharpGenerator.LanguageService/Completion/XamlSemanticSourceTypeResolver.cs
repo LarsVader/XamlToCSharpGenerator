@@ -14,6 +14,8 @@ namespace XamlToCSharpGenerator.LanguageService.Completion;
 
 internal static class XamlSemanticSourceTypeResolver
 {
+    private const string BlendDesignNamespace = "http://schemas.microsoft.com/expression/blend/2008";
+
     public static bool TryResolveBindingSourceType(
         XamlAnalysisResult analysis,
         XElement element,
@@ -197,27 +199,88 @@ internal static class XamlSemanticSourceTypeResolver
 
         for (var current = element; current is not null; current = current.Parent)
         {
+            // Check for x:DataType attribute (Avalonia / WinUI)
             var dataTypeAttribute = current.Attributes()
                 .FirstOrDefault(static attribute => string.Equals(attribute.Name.LocalName, "DataType", StringComparison.Ordinal));
-            if (dataTypeAttribute is null)
+            if (dataTypeAttribute is not null)
             {
-                continue;
+                var dataTypePrefixMap = XamlTypeReferenceNavigationResolver.BuildPrefixMapForElement(current);
+                var dataTypeType = ResolveTypeSymbol(analysis, dataTypePrefixMap, dataTypeAttribute.Value);
+                if (dataTypeType is not null)
+                {
+                    sourceTypeSymbol = dataTypeType;
+                    prefixMap = dataTypePrefixMap;
+                    return true;
+                }
             }
 
-            var dataTypePrefixMap = XamlTypeReferenceNavigationResolver.BuildPrefixMapForElement(current);
-            var dataTypeType = ResolveTypeSymbol(analysis, dataTypePrefixMap, dataTypeAttribute.Value);
-            if (dataTypeType is null)
+            // Check for d:DataContext="{d:DesignInstance ...}" attribute (WPF / Blend)
+            var designDataContextAttribute = current.Attributes()
+                .FirstOrDefault(static attribute =>
+                    string.Equals(attribute.Name.LocalName, "DataContext", StringComparison.Ordinal) &&
+                    string.Equals(attribute.Name.NamespaceName, BlendDesignNamespace, StringComparison.Ordinal));
+            if (designDataContextAttribute is not null &&
+                TryExtractDesignInstanceType(designDataContextAttribute.Value, out var designInstanceTypeToken))
             {
-                continue;
+                var designPrefixMap = XamlTypeReferenceNavigationResolver.BuildPrefixMapForElement(current);
+                var designType = ResolveTypeSymbol(analysis, designPrefixMap, designInstanceTypeToken);
+                if (designType is not null)
+                {
+                    sourceTypeSymbol = designType;
+                    prefixMap = designPrefixMap;
+                    return true;
+                }
             }
+        }
 
-            sourceTypeSymbol = dataTypeType;
-            prefixMap = dataTypePrefixMap;
+        return false;
+    }
+
+    /// <summary>
+    /// Extracts the type token from a d:DesignInstance markup extension value.
+    /// Supports both positional and named Type= syntax:
+    /// <c>{d:DesignInstance vm:MyViewModel}</c> and
+    /// <c>{d:DesignInstance Type=vm:MyViewModel, IsDesignTimeCreatable=True}</c>.
+    /// </summary>
+    internal static bool TryExtractDesignInstanceType(string attributeValue, out string typeToken)
+    {
+        typeToken = string.Empty;
+
+        if (!DesignInstanceMarkupParser.TryParseMarkupExtension(attributeValue, out var markupExtension))
+        {
+            return false;
+        }
+
+        // The extension name must be DesignInstance (with or without d: prefix)
+        var extensionName = markupExtension.Name;
+        var colonIndex = extensionName.IndexOf(':');
+        var localName = colonIndex >= 0 ? extensionName.Substring(colonIndex + 1) : extensionName;
+        if (!string.Equals(localName, "DesignInstance", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // Try named "Type" argument first
+        if (markupExtension.NamedArguments.TryGetValue("Type", out var namedType) &&
+            !string.IsNullOrWhiteSpace(namedType))
+        {
+            typeToken = namedType;
+            return true;
+        }
+
+        // Fall back to the first positional argument
+        if (markupExtension.PositionalArguments.Length > 0 &&
+            !string.IsNullOrWhiteSpace(markupExtension.PositionalArguments[0]))
+        {
+            typeToken = markupExtension.PositionalArguments[0];
             return true;
         }
 
         return false;
     }
+
+    private static readonly MarkupExpressionParser DesignInstanceMarkupParser = new(
+        new MarkupExpressionParserOptions(AllowLegacyInvalidNamedArgumentFallback: true));
 
     private static bool TryResolveBindingLocalDataType(
         XamlAnalysisResult analysis,

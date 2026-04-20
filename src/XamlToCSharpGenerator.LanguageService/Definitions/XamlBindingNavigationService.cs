@@ -1165,27 +1165,16 @@ internal static class XamlBindingNavigationService
         sourceTypeSymbol = null!;
         prefixMap = context.PrefixMap;
 
-        var current = context.Element;
-        while (current is not null)
+        if (!XamlSemanticSourceTypeResolver.TryResolveAmbientDataType(
+                context.Analysis,
+                context.Element,
+                out sourceTypeSymbol,
+                out prefixMap))
         {
-            var dataTypeAttribute = current.Attributes()
-                .FirstOrDefault(static attribute => string.Equals(attribute.Name.LocalName, "DataType", StringComparison.Ordinal));
-            if (dataTypeAttribute is not null)
-            {
-                var dataTypePrefixMap = XamlTypeReferenceNavigationResolver.BuildPrefixMapForElement(current);
-                var dataTypeType = ResolveTypeSymbol(context.Analysis, dataTypePrefixMap, dataTypeAttribute.Value);
-                if (dataTypeType is not null)
-                {
-                    sourceTypeSymbol = dataTypeType;
-                    prefixMap = dataTypePrefixMap;
-                    return true;
-                }
-            }
-
-            current = current.Parent;
+            return false;
         }
 
-        return false;
+        return true;
     }
 
     private static bool TryResolveNamedElementType(
